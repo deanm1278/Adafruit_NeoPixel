@@ -113,14 +113,30 @@ typedef uint16_t neoPixelType;
 typedef uint8_t  neoPixelType;
 #endif
 
+#ifdef __BF70x__
+#define NEO_00 0x88
+#define NEO_01 0x8C
+#define NEO_10 0xC8
+#define NEO_11 0xCC
+#endif
+
 class Adafruit_NeoPixel {
 
  public:
 
   // Constructor: number of LEDs, pin number, LED type
+#ifdef __BF70x__
+    Adafruit_NeoPixel(uint16_t n, uint8_t p=3, Sportgroup *sport=SPORT1, neoPixelType t=NEO_GRB + NEO_KHZ800);
+#endif
+
   Adafruit_NeoPixel(uint16_t n, uint8_t p=6, neoPixelType t=NEO_GRB + NEO_KHZ800);
   Adafruit_NeoPixel(void);
+
+#ifdef __BF70x__
+  ~Adafruit_NeoPixel() {}
+#else
   ~Adafruit_NeoPixel();
+#endif
 
   void
     begin(void),
@@ -174,6 +190,10 @@ class Adafruit_NeoPixel {
     *port;         // Output PORT register
   uint8_t
     pinMask;       // Output PORT bitmask
+#endif
+
+#ifdef __BF70x__
+  Sportgroup *hw;
 #endif
 };
 

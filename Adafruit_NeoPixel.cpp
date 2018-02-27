@@ -33,6 +33,10 @@
 
 #include "Adafruit_NeoPixel.h"
 
+#ifdef __BF70x__
+#include "wiring_private.h"
+#endif
+
 #if defined(NRF52)
 #include "nrf.h"
 
@@ -50,6 +54,15 @@ Adafruit_NeoPixel::Adafruit_NeoPixel(uint16_t n, uint8_t p, neoPixelType t) :
   setPin(p);
 }
 
+#ifdef __BF70x__
+Adafruit_NeoPixel::Adafruit_NeoPixel(uint16_t n, uint8_t p, Sportgroup *sport, neoPixelType t) : begun(false), brightness(0), pixels(NULL), endTime(0) {
+    updateType(t);
+    updateLength(n);
+    setPin(p);
+    hw = sport;
+}
+#endif
+
 // via Michael Vogt/neophob: empty constructor is used when strand length
 // isn't known at compile-time; situations where program config might be
 // read from internal flash memory or an SD card, or arrive via serial
@@ -64,27 +77,82 @@ Adafruit_NeoPixel::Adafruit_NeoPixel() :
 {
 }
 
+#ifndef __BF70x__ //TODO: why doesn't bfin compiler like this?
 Adafruit_NeoPixel::~Adafruit_NeoPixel() {
   if(pixels)   free(pixels);
   if(pin >= 0) pinMode(pin, INPUT);
 }
+#endif
 
 void Adafruit_NeoPixel::begin(void) {
+#ifdef __BF70x__
+    //TODO: this is not dynamic. in the future we will wanna choose channel A or B, and other pins are not muxed to 2
+    pinPeripheral(pin, PIO_MUX_2);
+
+    //clear regs
+    hw->CTL_A.reg = 0;
+    hw->MCTL_A.reg = 0;
+
+    hw->DIV_A.bit.CLKDIV = (VARIANT_SCLK0 / 3000000) - 1;
+
+     //set channel A to be transmit
+    hw->CTL_A.bit.SPTRAN = 1;
+
+    hw->CTL_A.bit.ICLK = 1; //internal clock mode
+    hw->CTL_A.bit.IFS = 1;
+    hw->CTL_A.bit.FSR = 1;
+    //set to I2S mode
+    hw->CTL_A.bit.OPMODE = 0; //standard DSP serial mode
+    hw->CTL_A.bit.LSBF = 0; //MSB first data
+    hw->CTL_A.bit.SLEN = 32 - 1;
+
+    //enable primary and disable secondary
+    hw->CTL_A.bit.SPENPRI = 1;
+    hw->CTL_A.bit.SPENSEC = 0;
+
+    hw->MCTL_A.bit.MCE = 0;
+
+    DMA[SPORT1_A_DMA]->ADDRSTART.reg = (uint32_t)pixels;
+
+    //TODO: set based on wordLength
+    DMA[SPORT1_A_DMA]->CFG.bit.MSIZE = DMA_MSIZE_4_BYTES;
+    DMA[SPORT1_A_DMA]->XCNT.reg = numLEDs * ((wOffset == rOffset) ? 3 : 4) + 1;
+    DMA[SPORT1_A_DMA]->XMOD.reg = 4;
+
+    DMA[SPORT1_A_DMA]->CFG.bit.WNR = DMA_CFG_WNR_READ_FROM_MEM;
+
+    DMA[SPORT1_A_DMA]->CFG.bit.FLOW = DMA_CFG_FLOW_STOP;
+    DMA[SPORT1_A_DMA]->CFG.bit.PSIZE = DMA_CFG_PSIZE_4_BYTES;
+#else
   if(pin >= 0) {
     pinMode(pin, OUTPUT);
     digitalWrite(pin, LOW);
   }
+#endif
   begun = true;
-
 }
 
 void Adafruit_NeoPixel::updateLength(uint16_t n) {
   if(pixels) free(pixels); // Free existing data (if any)
 
+#ifdef __BF70x__
+  DMA[SPORT1_A_DMA]->XCNT.reg = numLEDs * ((wOffset == rOffset) ? 12 : 16) + 1;
+  DMA[SPORT1_A_DMA]->ADDRSTART.reg = (uint32_t)pixels;
+
+  numBytes = n * ((wOffset == rOffset) ? 12 : 16) + 4;
+
+#else
   // Allocate new data -- note: ALL PIXELS ARE CLEARED
   numBytes = n * ((wOffset == rOffset) ? 3 : 4);
+#endif
   if((pixels = (uint8_t *)malloc(numBytes))) {
+#ifdef __BF70x__
+    memset(pixels, NEO_00, numBytes);
+    uint32_t term = 0;
+    memcpy(pixels + (n * ((wOffset == rOffset) ? 12 : 16)), &term, 4);
+#else
     memset(pixels, 0, numBytes);
+#endif
     numLEDs = n;
   } else {
     numLEDs = numBytes = 0;
@@ -108,6 +176,13 @@ void Adafruit_NeoPixel::updateType(neoPixelType t) {
     boolean newThreeBytesPerPixel = (wOffset == rOffset);
     if(newThreeBytesPerPixel != oldThreeBytesPerPixel) updateLength(numLEDs);
   }
+
+#ifdef __BF70x__
+  wOffset = wOffset * 4;
+  rOffset = rOffset * 4;
+  gOffset = gOffset * 4;
+  bOffset = bOffset * 4;
+#endif
 }
 
 #if defined(ESP8266) 
@@ -145,11 +220,15 @@ void Adafruit_NeoPixel::show(void) {
   // to the PORT register as needed.
 
   // NRF52 may use PWM + DMA (if available), may not need to disable interrupt
-#ifndef NRF52
+#if !defined(NRF52) && !defined(__BF70x__)
   noInterrupts(); // Need 100% focus on instruction timing
 #endif
 
-#ifdef __AVR__
+#ifdef __BF70x__
+  //blackfin plus just does through SPORT DMA
+  DMA[SPORT1_A_DMA]->CFG.bit.EN = 1;
+
+#elif defined(__AVR__)
 // AVR MCUs -- ATmega & ATtiny (no XMEGA) ---------------------------------
 
   volatile uint16_t
@@ -1897,7 +1976,7 @@ void Adafruit_NeoPixel::show(void) {
 
 // END ARCHITECTURE SELECT ------------------------------------------------
 
-#ifndef NRF52
+#if !defined(NRF52) && !defined(__BF70x__)
   interrupts();
 #endif
 
@@ -1906,12 +1985,20 @@ void Adafruit_NeoPixel::show(void) {
 
 // Set the output pin number
 void Adafruit_NeoPixel::setPin(uint8_t p) {
+
+#ifdef __BF70x__
+//TODO: make more dynamic
+    if(begun && (pin >= 0)) pinPeripheral(pin, PIO_MUX_2);
+    pin = p;
+#else
   if(begun && (pin >= 0)) pinMode(pin, INPUT);
     pin = p;
     if(begun) {
       pinMode(p, OUTPUT);
       digitalWrite(p, LOW);
     }
+#endif
+
 #ifdef __AVR__
     port    = portOutputRegister(digitalPinToPort(p));
     pinMask = digitalPinToBitMask(p);
@@ -1923,11 +2010,106 @@ void Adafruit_NeoPixel::setPixelColor(
  uint16_t n, uint8_t r, uint8_t g, uint8_t b) {
 
   if(n < numLEDs) {
-    if(brightness) { // See notes in setBrightness()
-      r = (r * brightness) >> 8;
-      g = (g * brightness) >> 8;
-      b = (b * brightness) >> 8;
+#ifdef __BF70x__
+    uint8_t *p;
+    if(wOffset == rOffset) { // Is an RGB-type strip
+      p = &pixels[n * 12];    // 3 bytes per pixel
+    } else {                 // Is a WRGB-type strip
+      p = &pixels[n * 16];    // 4 bytes per pixel
+      p[wOffset] = NEO_00;  // But only R,G,B passed -- set W to 0
+      p[wOffset+1] = NEO_00;
+      p[wOffset+2] = NEO_00;
+      p[wOffset+3] = NEO_00;
     }
+
+    uint8_t *pxPtr = p + rOffset;
+    for(int i=0; i<4; i++){
+        uint8_t code = r & 0x03;
+        switch(code){
+            case 0:{
+                 *pxPtr++ = NEO_00;
+                break;
+            }
+            case 1:
+            {
+                 *pxPtr++ = NEO_01;
+                break;
+            }
+            case 2:
+            {
+                 *pxPtr++ = NEO_10;
+                break;
+            }
+            case 3:
+            {
+                 *pxPtr++ = NEO_11;
+                break;
+            }
+        }
+        r = r >> 2;
+    }
+
+    pxPtr = p + gOffset;
+    for(int i=0; i<4; i++){
+        uint8_t code = g & 0x03;
+        switch(code){
+            case 0:{
+                 *pxPtr++ = NEO_00;
+                break;
+            }
+            case 1:
+            {
+                 *pxPtr++ = NEO_01;
+                break;
+            }
+            case 2:
+            {
+                 *pxPtr++ = NEO_10;
+                break;
+            }
+            case 3:
+            {
+                 *pxPtr++ = NEO_11;
+                break;
+            }
+        }
+        g = g >> 2;
+    }
+
+    pxPtr = p + bOffset;
+    for(int i=0; i<4; i++){
+        uint8_t code = b & 0x03;
+        switch(code){
+            case 0:{
+                 *pxPtr++ = NEO_00;
+                break;
+            }
+            case 1:
+            {
+                 *pxPtr++ = NEO_01;
+                break;
+            }
+            case 2:
+            {
+                 *pxPtr++ = NEO_10;
+                break;
+            }
+            case 3:
+            {
+                 *pxPtr++ = NEO_11;
+                break;
+            }
+        }
+        b = b >> 2;
+    }
+  }
+#else
+      if(brightness) { // See notes in setBrightness()
+        r = (r * brightness) >> 8;
+        g = (g * brightness) >> 8;
+        b = (b * brightness) >> 8;
+      }
+
     uint8_t *p;
     if(wOffset == rOffset) { // Is an RGB-type strip
       p = &pixels[n * 3];    // 3 bytes per pixel
@@ -1939,10 +2121,13 @@ void Adafruit_NeoPixel::setPixelColor(
     p[gOffset] = g;
     p[bOffset] = b;
   }
+#endif
 }
 
 void Adafruit_NeoPixel::setPixelColor(
  uint16_t n, uint8_t r, uint8_t g, uint8_t b, uint8_t w) {
+
+  //TODO: add bfin support for RGBW
 
   if(n < numLEDs) {
     if(brightness) { // See notes in setBrightness()
@@ -1966,6 +2151,9 @@ void Adafruit_NeoPixel::setPixelColor(
 
 // Set pixel color from 'packed' 32-bit RGB color:
 void Adafruit_NeoPixel::setPixelColor(uint16_t n, uint32_t c) {
+#ifdef __BF70x__
+    setPixelColor(n, (c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
+#else
   if(n < numLEDs) {
     uint8_t *p,
       r = (uint8_t)(c >> 16),
@@ -1987,6 +2175,7 @@ void Adafruit_NeoPixel::setPixelColor(uint16_t n, uint32_t c) {
     p[gOffset] = g;
     p[bOffset] = b;
   }
+#endif
 }
 
 // Convert separate R,G,B into packed 32-bit RGB color.
