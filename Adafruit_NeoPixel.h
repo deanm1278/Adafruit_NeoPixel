@@ -118,6 +118,8 @@ typedef uint8_t  neoPixelType;
 #define NEO_01 0x8C
 #define NEO_10 0xC8
 #define NEO_11 0xCC
+
+#define TRAIL_TXNS 2
 #endif
 
 class Adafruit_NeoPixel {

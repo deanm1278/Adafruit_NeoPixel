@@ -57,7 +57,7 @@ Adafruit_NeoPixel::Adafruit_NeoPixel(uint16_t n, uint8_t p, neoPixelType t) :
 #ifdef __BF70x__
 Adafruit_NeoPixel::Adafruit_NeoPixel(uint16_t n, uint8_t p, Sportgroup *sport, neoPixelType t) : begun(false), brightness(0), pixels(NULL), endTime(0) {
     updateType(t);
-    updateLength(n);
+    updateLength(n+1);
     setPin(p);
     hw = sport;
 }
@@ -101,7 +101,7 @@ void Adafruit_NeoPixel::begin(void) {
     hw->CTL_A.bit.ICLK = 1; //internal clock mode
     hw->CTL_A.bit.IFS = 1;
     hw->CTL_A.bit.FSR = 1;
-    //set to I2S mode
+
     hw->CTL_A.bit.OPMODE = 0; //standard DSP serial mode
     hw->CTL_A.bit.LSBF = 0; //MSB first data
     hw->CTL_A.bit.SLEN = 32 - 1;
@@ -112,11 +112,11 @@ void Adafruit_NeoPixel::begin(void) {
 
     hw->MCTL_A.bit.MCE = 0;
 
-    DMA[SPORT1_A_DMA]->ADDRSTART.reg = (uint32_t)pixels;
+    DMA[SPORT1_A_DMA]->CFG.bit.EN = 0;
 
     //TODO: set based on wordLength
     DMA[SPORT1_A_DMA]->CFG.bit.MSIZE = DMA_MSIZE_4_BYTES;
-    DMA[SPORT1_A_DMA]->XCNT.reg = numLEDs * ((wOffset == rOffset) ? 3 : 4) + 1;
+    DMA[SPORT1_A_DMA]->XCNT.reg = numLEDs * ((wOffset == rOffset) ? 3 : 4) + TRAIL_TXNS;
     DMA[SPORT1_A_DMA]->XMOD.reg = 4;
 
     DMA[SPORT1_A_DMA]->CFG.bit.WNR = DMA_CFG_WNR_READ_FROM_MEM;
@@ -136,10 +136,8 @@ void Adafruit_NeoPixel::updateLength(uint16_t n) {
   if(pixels) free(pixels); // Free existing data (if any)
 
 #ifdef __BF70x__
-  DMA[SPORT1_A_DMA]->XCNT.reg = numLEDs * ((wOffset == rOffset) ? 12 : 16) + 1;
-  DMA[SPORT1_A_DMA]->ADDRSTART.reg = (uint32_t)pixels;
-
-  numBytes = n * ((wOffset == rOffset) ? 12 : 16) + 4;
+  DMA[SPORT1_A_DMA]->CFG.bit.EN = 0;
+  numBytes = n * ((wOffset == rOffset) ? 12 : 16) + (TRAIL_TXNS*sizeof(uint32_t));
 
 #else
   // Allocate new data -- note: ALL PIXELS ARE CLEARED
@@ -148,12 +146,14 @@ void Adafruit_NeoPixel::updateLength(uint16_t n) {
   if((pixels = (uint8_t *)malloc(numBytes))) {
 #ifdef __BF70x__
     memset(pixels, NEO_00, numBytes);
-    uint32_t term = 0;
-    memcpy(pixels + (n * ((wOffset == rOffset) ? 12 : 16)), &term, 4);
+    memset(pixels + (n * ((wOffset == rOffset) ? 12 : 16)), 0, TRAIL_TXNS*sizeof(uint32_t));
+    memset(pixels, 0, ((wOffset == rOffset) ? 12 : 16)); //TODO: this is a bad solution but the first bit gets extended so lets knock out the whole first pixel
+    DMA[SPORT1_A_DMA]->ADDRSTART.reg = (uint32_t)pixels;
 #else
     memset(pixels, 0, numBytes);
 #endif
     numLEDs = n;
+    DMA[SPORT1_A_DMA]->XCNT.reg = numLEDs * ((wOffset == rOffset) ? 3 : 4) + TRAIL_TXNS;
   } else {
     numLEDs = numBytes = 0;
   }
@@ -226,6 +226,7 @@ void Adafruit_NeoPixel::show(void) {
 
 #ifdef __BF70x__
   //blackfin plus just does through SPORT DMA
+  while(DMA[SPORT1_A_DMA]->STAT.bit.RUN);
   DMA[SPORT1_A_DMA]->CFG.bit.EN = 1;
 
 #elif defined(__AVR__)
@@ -2008,6 +2009,10 @@ void Adafruit_NeoPixel::setPin(uint8_t p) {
 // Set pixel color from separate R,G,B components:
 void Adafruit_NeoPixel::setPixelColor(
  uint16_t n, uint8_t r, uint8_t g, uint8_t b) {
+
+#ifdef __BF70x__
+    n = n + 1; //TODO: remove if we find a better fix
+#endif
 
   if(n < numLEDs) {
 #ifdef __BF70x__
