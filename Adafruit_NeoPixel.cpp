@@ -204,7 +204,9 @@ void Adafruit_NeoPixel::show(void) {
   // subsequent round of data until the latch time has elapsed.  This
   // allows the mainline code to start generating the next frame of data
   // rather than stalling for the latch.
+#ifndef __BF70x__
   while(!canShow());
+#endif
   // endTime is a private member (rather than global var) so that mutliple
   // instances on different pins can be quickly issued in succession (each
   // instance doesn't delay the next).
@@ -2288,5 +2290,9 @@ uint8_t Adafruit_NeoPixel::getBrightness(void) const {
 }
 
 void Adafruit_NeoPixel::clear() {
+#ifdef __BF70x__
+    memset(pixels, NEO_00, numBytes);
+#else
   memset(pixels, 0, numBytes);
+#endif
 }
